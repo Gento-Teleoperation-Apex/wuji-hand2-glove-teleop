@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+# Upgrade old unmanaged /usr/local wrappers only when they belong to this deployment.
+# Preserve a copy once; all new package-owned wrappers live in /usr/bin.
+if [ "$1" = configure ]; then
+  for name in wuji-hand2-check wuji-hand2-driver wuji-hand2-glove wuji-both-record wuji-left-record wuji-right-record wuji-both-poses wuji-left-poses wuji-right-poses wuji-pose-web; do
+    old="/usr/local/bin/$name"
+    if [ -f "$old" ] && [ ! -L "$old" ] && grep -q /opt/kernelmind/wuji-hand2/ "$old"; then
+      mkdir -p /var/backups/wuji-hand2/pre-2.2.0
+      if [ ! -e "/var/backups/wuji-hand2/pre-2.2.0/$name" ]; then cp -p "$old" "/var/backups/wuji-hand2/pre-2.2.0/$name"; fi
+      ln -sf "/usr/bin/$name" "$old"
+    fi
+  done
+fi
+echo 'Wuji Hand2 installed. No hardware or services started.'
+echo 'Configure /etc/wuji-hand2/config.env; run wuji-setup-runtime if SDK is missing.'
+echo 'Guide: /usr/share/doc/wuji-hand2-glove-teleop/README.md'

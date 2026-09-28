@@ -10,13 +10,14 @@ application-layer tuning inspired by dex-retargeting / manus_dex_ws practice:
   2. Per-finger keypoint scaling from the wrist before ``session.step``.
   3. Optional pinky flexion gain / open bias after retarget.
   4. Opposition close: pull thumb tip toward the nearest fingertip when close.
-  5. **Footkey gate** (match Apex Teleop): hold ``F7`` to stream commands;
-     release freezes at last cmd. Publishes ``std_msgs/Bool`` on ``/control/footkey``.
+  5. **Control mode / footkey**: Hand2 uses ``std_msgs/Int32`` on
+     ``/tj/control/footkey2`` (0 standby / 1 teleop / 2 home / 3 user / 4 replay).
+     F7 hold → 1, release → 0. Gen-1 still uses ``Bool`` on ``/control/footkey``.
   6. **Command sink** (``--drive``):
        - ``sdk``: connect Wuji Hand 2 over Ethernet and publish
          ``JointCommand`` directly.
-       - ``ros`` + ``wujihand2``: publish to ``/hand_left2|/hand_right2/joint_commands``
-         + ``/control/footkey2`` for ``wujihand2_ros_driver.py``.
+       - ``ros`` + ``wujihand2``: publish to ``/tj/hand_left2|/tj/hand_right2/joint_commands``
+         + ``/tj/control/footkey2`` for ``wujihand2_ros_driver.py``.
        - ``ros`` + ``wujihand``: gen-1 ``wujihandros2`` topics (``hand_left`` /
          ``hand_right`` + ``/control/footkey``).
   7. **Footkey + go_home** still work in both modes.
@@ -72,10 +73,19 @@ from home_pose_service import DEFAULT_CONFIG, HomePoseService
 FPS = 120
 DEFAULT_HAND_NAME = {"right": "hand_right", "left": "hand_left"}
 DEFAULT_HAND_NAME_2 = {"right": "hand_right2", "left": "hand_left2"}
-DEFAULT_GO_HOME_SERVICE = "/tj/control/go_home"
+TOPIC_NS = "/tj"
+DEFAULT_GO_HOME_SERVICE = f"{TOPIC_NS}/control/go_home"
 DEFAULT_HOME_CONFIG = DEFAULT_CONFIG
 FOOTKEY_TOPIC_GEN1 = "/control/footkey"
-FOOTKEY_TOPIC_HAND2 = "/control/footkey2"
+FOOTKEY_TOPIC_HAND2 = f"{TOPIC_NS}/control/footkey2"
+
+
+def _ns_topic(name: str) -> str:
+    path = name if name.startswith("/") else f"/{name}"
+    ns = TOPIC_NS.rstrip("/")
+    if path == ns or path.startswith(ns + "/"):
+        return path
+    return f"{ns}{path}"
 
 # Hand 2 direct-drive MIT + EMA (gen-1 filtering lived in wujihandros2)
 HAND2_QPOS_EMA = 0.35
@@ -93,15 +103,22 @@ PINKY_FINGER = 4
 
 
 class RosJointCommandPublisher:
-    """Publish JointState + footkey Bool; optional Trigger go_home service.
+    """Publish JointState + footkey; optional Trigger go_home service.
 
     Topics:
-      /{hand_name}/joint_commands   sensor_msgs/JointState  (position[20])
-      footkey_topic                 std_msgs/Bool
+      /tj/{hand_name}/joint_commands  sensor_msgs/JointState  (position[20])
+      footkey_topic                   Hand2: std_msgs/Int32 mode; gen-1: Bool
 
-    Gen-1 (wujihandros2): hand_left / hand_right + /control/footkey
-    Hand2 (wujihand2_ros_driver): hand_left2 / hand_right2 + /control/footkey2
+    Gen-1 (wujihandros2): hand_left / hand_right + /control/footkey (Bool)
+    Hand2 (wujihand2_ros_driver): /tj/hand_*2 + /tj/control/footkey2
+      Int32: 0 standby / 1 teleop / 2 home / 3 user / 4 replay
     """
+
+    MODE_STANDBY = 0
+    MODE_TELEOP = 1
+    MODE_HOME = 2
+    MODE_USER = 3
+    MODE_REPLAY = 4
 
     def __init__(
         self,
@@ -114,7 +131,7 @@ class RosJointCommandPublisher:
             from rclpy.node import Node
             from rclpy.qos import qos_profile_sensor_data
             from sensor_msgs.msg import JointState
-            from std_msgs.msg import Bool
+            from std_msgs.msg import Bool, Int32
         except ImportError as exc:
             raise SystemExit(
                 "rclpy / sensor_msgs / std_msgs required.\n"
@@ -127,7 +144,13 @@ class RosJointCommandPublisher:
         self._rclpy = rclpy
         self._JointState = JointState
         self._Bool = Bool
+        self._Int32 = Int32
+        self._external_mode = os.environ.get('WUJI_EXTERNAL_MODE') == '1'
+        self._external_mode_value = 0
+        self._external_mode_seen = 0.0
         self._footkey_topic = footkey_topic
+        # Hand2 mode Int32; gen-1 keeps Bool for wujihandros2.
+        self._footkey_int = footkey_topic.rstrip("/").endswith("footkey2")
         self._shutdown_rclpy = False
         self._spin_thread: Optional[threading.Thread] = None
         if not rclpy.ok():
@@ -136,21 +159,53 @@ class RosJointCommandPublisher:
 
         domain = os.environ.get("ROS_DOMAIN_ID", "0")
         self._node = Node("wuji_teleop_tuned")
-        self._pubs = {
-            name: self._node.create_publisher(
-                JointState, f"/{name}/joint_commands", qos_profile_sensor_data
+        self._cmd_topics: dict[str, str] = {}
+        self._pubs = {}
+        for name in hand_names:
+            cmd_topic = (
+                _ns_topic(f"{name}/joint_commands")
+                if self._footkey_int
+                else f"/{name}/joint_commands"
             )
-            for name in hand_names
-        }
-        self._footkey_pub = self._node.create_publisher(Bool, footkey_topic, 10)
-        self._last_footkey: Optional[bool] = None
+            self._cmd_topics[name] = cmd_topic
+            self._pubs[name] = self._node.create_publisher(
+                JointState, cmd_topic, qos_profile_sensor_data
+            )
+        # Hand2 teleop also publishes flat /tj/hand_*_cmd (mode=1 path).
+        self._cmd_pubs: dict[str, Any] = {}
+        self._flat_topics: dict[str, str] = {}
+        if self._footkey_int and not self._external_mode and os.environ.get('WUJI_CANONICAL_ONLY') != '1':
+            for name in hand_names:
+                # hand_left2 → /tj/hand_left_cmd
+                if name.endswith("2"):
+                    flat = _ns_topic(f"{name[:-1]}_cmd")
+                    self._flat_topics[name] = flat
+                    self._cmd_pubs[name] = self._node.create_publisher(
+                        JointState, flat, qos_profile_sensor_data
+                    )
+        if self._external_mode:
+            self._footkey_pub = None
+            self._last_footkey = None
+            self._node.create_subscription(Int32, footkey_topic, self._on_external_mode, 10)
+            fk_type = 'external Apex mode (subscribe only)'
+        elif self._footkey_int:
+            self._footkey_pub = self._node.create_publisher(Int32, footkey_topic, 10)
+            self._last_footkey: Optional[int] = None
+            fk_type = "std_msgs/Int32 mode 0..4"
+        else:
+            self._footkey_pub = self._node.create_publisher(Bool, footkey_topic, 10)
+            self._last_footkey = None
+            fk_type = "std_msgs/Bool"
         print(f"ROS_DOMAIN_ID={domain}")
         for name in hand_names:
+            extra = ""
+            if name in self._flat_topics:
+                extra = f" + {self._flat_topics[name]}"
             print(
-                f"ROS command topic: /{name}/joint_commands "
+                f"ROS command topic: {self._cmd_topics[name]}{extra} "
                 "(sensor_msgs/JointState, position[20])"
             )
-        print(f"ROS footkey topic: {footkey_topic} (std_msgs/Bool)")
+        print(f"ROS footkey topic: {footkey_topic} ({fk_type})")
 
     def start_spin(self) -> None:
         """Background spin so ROS services can be served while teleop loops."""
@@ -176,15 +231,27 @@ class RosJointCommandPublisher:
 
         def callback(_request, response):
             try:
-                # Driver only accepts joint_commands while footkey is true.
-                self.set_footkey(True)
-                done = home.request_go_home(duration_s)
-                if not done.wait(timeout=max(duration_s, 0.1) + 5.0):
-                    response.success = False
-                    response.message = "go_home timeout"
+                if self._footkey_int:
+                    # Driver mode=2 streams home_pose.json; also run local go_home
+                    # for sdk/ros joint_commands path when mode briefly teleop.
+                    self.set_control_mode(self.MODE_HOME)
+                    done = home.request_go_home(duration_s)
+                    if not done.wait(timeout=max(duration_s, 0.1) + 5.0):
+                        response.success = False
+                        response.message = "go_home timeout"
+                    else:
+                        response.success = True
+                        response.message = "reset"
+                    self.set_control_mode(self.MODE_STANDBY)
                 else:
-                    response.success = True
-                    response.message = "reset"
+                    self.set_footkey(True)
+                    done = home.request_go_home(duration_s)
+                    if not done.wait(timeout=max(duration_s, 0.1) + 5.0):
+                        response.success = False
+                        response.message = "go_home timeout"
+                    else:
+                        response.success = True
+                        response.message = "reset"
             except Exception as exc:
                 response.success = False
                 response.message = str(exc)
@@ -196,15 +263,43 @@ class RosJointCommandPublisher:
             f"duration={duration_s:.2f}s) → message 'reset'"
         )
 
+    def _on_external_mode(self, msg) -> None:
+        self._external_mode_value = int(msg.data)
+        self._external_mode_seen = time.monotonic()
+
+    def set_control_mode(self, mode: int) -> None:
+        """Publish Hand2 Int32 control mode (0..4). No-op type-wise on gen-1 Bool."""
+        if self._external_mode:
+            return
+        mode = int(mode)
+        if self._footkey_int:
+            msg = self._Int32()
+            msg.data = mode
+            self._footkey_pub.publish(msg)
+            if self._last_footkey != mode:
+                self._last_footkey = mode
+                print(f"Published {self._footkey_topic} mode={mode}")
+        else:
+            self.set_footkey(mode == self.MODE_TELEOP)
+
     def set_footkey(self, enabled: bool) -> None:
+        """Compat: True→mode 1 (teleop), False→mode 0 (standby)."""
+        if self._footkey_int:
+            self.set_control_mode(
+                self.MODE_TELEOP if enabled else self.MODE_STANDBY
+            )
+            return
         msg = self._Bool()
         msg.data = bool(enabled)
         self._footkey_pub.publish(msg)
         if self._last_footkey is not enabled:
-            self._last_footkey = enabled
+            self._last_footkey = enabled  # type: ignore[assignment]
             print(f"Published {self._footkey_topic} = {enabled}")
 
     def send(self, qpos: list[float], hand_name: str) -> None:
+        if self._external_mode and (self._external_mode_value != self.MODE_TELEOP
+                or time.monotonic() - self._external_mode_seen > 1.0):
+            return
         pub = self._pubs.get(hand_name)
         if pub is None:
             raise KeyError(f"no publisher for hand {hand_name!r}")
@@ -212,6 +307,9 @@ class RosJointCommandPublisher:
         msg.header.stamp = self._node.get_clock().now().to_msg()
         msg.position = [float(x) for x in qpos]
         pub.publish(msg)
+        cmd_pub = self._cmd_pubs.get(hand_name)
+        if cmd_pub is not None:
+            cmd_pub.publish(msg)
 
     def send_all(self, qpos: list[float]) -> None:
         for name in self._pubs:
@@ -219,7 +317,10 @@ class RosJointCommandPublisher:
 
     def close(self) -> None:
         with contextlib.suppress(Exception):
-            self.set_footkey(False)
+            if self._footkey_int:
+                self.set_control_mode(self.MODE_STANDBY)
+            else:
+                self.set_footkey(False)
         with contextlib.suppress(Exception):
             self._node.destroy_node()
         if self._shutdown_rclpy:
@@ -277,47 +378,42 @@ class Hand2DirectDriver:
         self._footkey = False
         self._ros: Optional[RosJointCommandPublisher] = None
 
-        hand_devs = [
-            d for d in manager.scan() if d.device_type == DeviceType.WujiHand2
-        ]
-        by_side: dict[str, Any] = {}
-        for d in hand_devs:
+        self._enabled = set()
+        paired = {side: os.environ.get(f"WUJI_{side.upper()}_SN", "") for side in sides}
+        by_side = {}
+        for d in manager.scan():
+            if d.device_type != DeviceType.WujiHand2:
+                continue
+            if all(paired.values()) and d.sn not in paired.values():
+                continue
             hand = manager.connect(sn=d.sn, device_name=f"hand2_{d.sn}")
             side = _parse_hand_side(hand.handedness().get())
-            if side is None:
-                print(f"Skip Hand2 {d.sn}: unknown handedness")
+            if hand.serial_number != d.sn:
+                raise RuntimeError(f"Hand identity mismatch: {d.sn}; check duplicate IPs")
+            if side not in sides:
                 continue
+            if paired[side] and paired[side] != d.sn:
+                continue
+            if side in by_side:
+                raise RuntimeError(f"Multiple {side} hands: configure a paired serial number")
             by_side[side] = hand
-
+        missing = set(sides) - set(by_side)
+        if missing:
+            raise RuntimeError(f"Required hands missing: {sorted(missing)}; no motors enabled")
         for side in sides:
-            hand = by_side.get(side)
-            if hand is None:
-                print(f"Skip {side}: no matching Wuji Hand 2")
-                continue
-            name = hand_names[side]
-            with contextlib.suppress(Exception):
-                hand.clear_fault()
-            hand.effort_limit().set(HAND2_EFFORT_LIMIT)
-            hand.mit_params().set((HAND2_KP, HAND2_KD))
-            hand.enable()
-            if not _wait_hand2_enabled(hand):
-                print(f"[{name}] enable timeout — motion may stutter")
-            pub = hand.joint_command().publish()
+            hand, name = by_side[side], hand_names[side]
             self._hands[name] = hand
-            self._pubs[name] = pub
+            self._pubs[name] = hand.joint_command().publish()
             self._cmds[name] = [JointCommand(0.0, 0.0, 0.0) for _ in range(20)]
             self._q_filt[name] = None
-            print(
-                f"Hand2 direct: {side} SN={hand.serial_number} → {name} "
-                f"(kp={HAND2_KP}, kd={HAND2_KD}, ema={HAND2_QPOS_EMA})"
-            )
-
-        if not self._pubs:
-            raise SystemExit("No Wuji Hand 2 connected for --drive sdk")
+            print(f"Hand2 direct: {side} SN={hand.serial_number}; waiting for valid gated command")
 
         if ros_bridge:
             try:
-                self._ros = RosJointCommandPublisher(list(self._pubs.keys()))
+                self._ros = RosJointCommandPublisher(
+                    list(self._pubs.keys()),
+                    footkey_topic=FOOTKEY_TOPIC_HAND2,
+                )
             except SystemExit as exc:
                 print(f"ROS bridge skipped ({exc}); footkey/go_home are local-only")
                 self._ros = None
@@ -346,10 +442,47 @@ class Hand2DirectDriver:
             self._ros.set_footkey(enabled)
 
     def send(self, qpos: list[float], hand_name: str) -> None:
+        if not self._footkey:
+            if hand_name in self._enabled:
+                self._pubs[hand_name].send(self._cmds[hand_name])
+            return
         pub = self._pubs.get(hand_name)
         if pub is None:
             raise KeyError(f"no Hand2 publisher for {hand_name!r}")
         q = np.asarray(qpos, dtype=np.float32)
+        if q.shape != (20,) or not np.isfinite(q).all():
+            raise ValueError("Expected 20 finite joint angles")
+        if hand_name not in self._enabled:
+            hand = self._hands[hand_name]
+            sub = hand.joint_states().subscribe()
+            current = None
+            deadline = time.monotonic() + 3
+            try:
+                while time.monotonic() < deadline:
+                    frame = sub.recv()
+                    values = {}
+                    if frame is not None:
+                        for joint in frame.joints:
+                            bus, index = divmod(int(joint.nid)-1, 5)
+                            if 0 <= bus < 5 and 0 <= index < 4:
+                                values[bus*4+index] = float(joint.position)
+                    if len(values) == 20 and all(np.isfinite(v) for v in values.values()):
+                        current = np.array([values[i] for i in range(20)])
+                        break
+                    time.sleep(.01)
+            finally:
+                sub.close()
+            if current is None:
+                raise RuntimeError("No complete current joint feedback; refusing enable")
+            # Register before enable so cleanup also handles a partial enable failure.
+            self._enabled.add(hand_name)
+            hand.effort_limit().set(HAND2_EFFORT_LIMIT)
+            hand.mit_params().set((HAND2_KP, HAND2_KD))
+            pub.send([JointCommand(float(v), 0.0, 0.0) for v in current])
+            hand.enable()
+            if not _wait_hand2_enabled(hand):
+                raise RuntimeError("Hand enable timed out")
+            self._q_filt[hand_name] = current
         prev = self._q_filt[hand_name]
         if prev is None:
             filt = q.copy()
@@ -373,7 +506,7 @@ class Hand2DirectDriver:
             with contextlib.suppress(Exception):
                 pub.close()
             hand = self._hands.get(name)
-            if hand is not None:
+            if hand is not None and name in self._enabled:
                 with contextlib.suppress(Exception):
                     hand.disable()
         if self._ros is not None:
@@ -423,10 +556,10 @@ def select_sdk_user(manager: SdkManager, args: argparse.Namespace) -> dict[str, 
 
 
 class FootkeyGate:
-    """Hold F7 to enable streaming (same as Apex Teleop); release freezes.
+    """Hold F7 for teleop mode (same as Apex Teleop); release → standby.
 
-    Hold ``F7`` → control enabled / publish Bool True.
-    Release → freeze (re-send last command) / publish Bool False.
+    Hold ``F7`` → mode 1 (teleop) / publish Int32 1 on Hand2 footkey2.
+    Release → mode 0 (standby) / publish Int32 0.
     """
 
     def __init__(self, enabled: bool = True) -> None:
@@ -482,8 +615,8 @@ class FootkeyGate:
             ) from exc
 
         print(
-            "Footkey: hold F7 to stream commands "
-            "(release freezes hand at last pose; same as Apex Teleop)"
+            "Footkey: hold F7 → mode 1 teleop "
+            "(release → mode 0 standby; Hand2 /tj/control/footkey2 is Int32)"
         )
 
     def stop(self) -> None:
@@ -498,7 +631,7 @@ class FootkeyGate:
         on = self.active
         if on != self._last_logged:
             self._last_logged = on
-            print(f"Footkey: control {'ENABLED' if on else 'DISABLED'}")
+            print(f"Footkey: mode {'1 teleop' if on else '0 standby'}")
 
 
 def read_keypoints(skeleton_sub) -> Optional[np.ndarray]:
@@ -635,6 +768,7 @@ def teleop(
                 "session": session,
                 "send": send,
                 "last_kp": None,
+                "seen": time.monotonic(),
                 "last_sent": None,
             }
         )
@@ -659,10 +793,15 @@ def teleop(
         for st in states:
             kp = read_keypoints(st["sub"])
             if kp is None:
+                if time.monotonic() - st["seen"] > 1.:
+                    raise RuntimeError("Glove skeleton missing for 1 second; stopping control")
                 kp = st["last_kp"]
                 if kp is None:
                     continue
             else:
+                if kp.shape != (21, 3) or not np.isfinite(kp).all():
+                    raise ValueError("Invalid glove skeleton")
+                st["seen"] = time.monotonic()
                 st["last_kp"] = kp
 
             if not enabled:
@@ -709,18 +848,39 @@ def run_teleop(
     go_home_duration: float,
 ) -> int:
     gloves_by_side: dict[str, Any] = {}
+    paired = {s: os.environ.get(f"WUJI_{s.upper()}_GLOVE_SN", "") for s in sides}
+    paired_sns = {sn for sn in paired.values() if sn}
     for d in manager.scan():
         print(f"  SN={d.sn}, Type={d.device_type}, Address={d.address}")
         if d.device_type != DeviceType.WujiGlove:
             continue
+        if paired_sns and d.sn not in paired_sns:
+            continue
         glove = manager.connect(sn=d.sn, device_name=f"glove_{d.sn}")
+        if glove.serial_number != d.sn:
+            manager.disconnect_all()
+            raise RuntimeError(f"Glove identity mismatch: expected {d.sn}, connected {glove.serial_number}; check duplicate IPs")
         label = parse_side_label(glove.hand_side().get())
+        expected = next((s for s, sn in paired.items() if sn == d.sn), None)
+        if expected is not None and label != expected:
+            manager.disconnect_all()
+            raise RuntimeError(f"Paired {expected} glove {d.sn} reports side={label}")
         if label is None:
             print(f"Skip glove {d.sn}: unknown hand_side")
+            glove.disconnect()
             continue
         if label not in sides:
+            glove.disconnect()
             continue
+        if label in gloves_by_side:
+            raise RuntimeError(f"Multiple {label} gloves: configure paired serial numbers")
         gloves_by_side[label] = glove
+
+    missing = [s for s in sides if s not in gloves_by_side]
+    if missing:
+        print(f"Paired gloves unavailable: {', '.join(missing)}")
+        manager.disconnect_all()
+        return 1
 
     ordered = [s for s in ("left", "right") if s in gloves_by_side]
     for s in sides:
@@ -734,7 +894,7 @@ def run_teleop(
 
     if drive == "sdk":
         sink: Any = Hand2DirectDriver(
-            manager, ordered, hand_names, ros_bridge=True
+            manager, ordered, hand_names, ros_bridge=False
         )
         print("Drive: sdk (Wuji Hand 2 direct — no ROS driver node)")
     else:
@@ -750,7 +910,7 @@ def run_teleop(
         if hand_model == HandModel.WujiHand2:
             print(
                 "Drive: ros → wujihand2_ros_driver "
-                f"({', '.join('/'+hand_names[s]+'/joint_commands' for s in ordered)})"
+                f"({', '.join(_ns_topic(hand_names[s]+'/joint_commands') for s in ordered)})"
             )
         else:
             print("Drive: ros → wujihandros2 (gen-1 USB)")
@@ -767,7 +927,6 @@ def run_teleop(
     sink.start_spin()
 
     footkey = FootkeyGate(enabled=use_footkey)
-    footkey.start()
 
     arms = [
         (
@@ -780,6 +939,7 @@ def run_teleop(
     ]
 
     try:
+        footkey.start()
         teleop(
             arms,
             hand_model,
@@ -811,6 +971,8 @@ def parse_args() -> argparse.Namespace:
             "--drive ros: gen-1 wujihandros2 topics."
         )
     )
+    p.add_argument("--profile", choices=("official", "tuned"), default="tuned",
+                   help="official: SDK RetargetSession baseline, no application finger/pinch tuning")
     user = p.add_mutually_exclusive_group()
     user.add_argument(
         "--user-name",
@@ -845,7 +1007,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Command sink: sdk=direct Hand2 Ethernet; "
-            "ros=ROS topics (Hand2→hand_*2 + footkey2 via wujihand2_ros_driver; "
+            "ros=ROS topics (Hand2→/tj/hand_*2 + /tj/control/footkey2 via wujihand2_ros_driver; "
             "gen-1→hand_* + footkey via wujihandros2). "
             "Default: sdk if --hand-model wujihand2 else ros."
         ),
@@ -926,6 +1088,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.profile == "official":
+        args.default_user = True
+        args.user_name = None
+        args.finger_scaling = [1.] * 5
+        args.pinky_scale = 1.
+        args.pinky_flex_gain = 1.
+        args.pinky_open_bias = 0.
+        args.opposition_close = 0.
+        args.pinch_flex_boost = 0.
     sides = ["left", "right"] if args.side == "both" else [args.side]
     hand_model = HandModel.WujiHand if args.hand_model == "wujihand" else HandModel.WujiHand2
     drive = args.drive
@@ -985,6 +1156,7 @@ def main() -> int:
             go_home_duration=args.go_home_duration,
         )
     finally:
+        manager.disconnect_all()
         try:
             manager.switch_user(previous_user["user_id"])
         except Exception as exc:

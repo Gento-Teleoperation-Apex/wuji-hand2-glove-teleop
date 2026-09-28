@@ -1,3 +1,20 @@
+# Application changelog
+
+## 2.2.0 — 2026-09-28
+
+- Package the deployed dual-hand ROS driver, paired gloves, B/X manual teaching, independent right 1/2/3 and left A/S/D pose switching, and web control.
+- Add read-only combined hand/glove checks, official SDK baseline and tuned SDK entry points, documented F7/no-footkey ROS and SDK paths.
+- Fix undefined external-mode attributes in SDK direct send; validate paired hands, gate and lazily enable direct control with current-position priming, clean up failed enables, stop on stale glove frames.
+- Add hand MCAP recording and feedback-to-replay routing; document the separate Apex integration contract and validation boundary.
+- Build arm64 and amd64 debs without starting hardware; preserve existing pairing and user pose files, provide pinned external SDK runtime setup and generic site configuration.
+- Rewrite operating guide in the requested sequence and include isolated hardware-free regression tests.
+
+---
+
+# Upstream SDK history retained from the original examples
+
+The following entries describe SDK releases, not this application's version numbers.
+
 # Changelog
 
 All notable changes to wuji-sdk will be documented in this file.

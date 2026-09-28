@@ -1,122 +1,53 @@
 #!/usr/bin/env bash
-# Build a Debian package for Wuji Hand 2 glove teleop + ROS driver.
-#
-# Usage:
-#   ./build_deb.sh [VERSION]
-# Example:
-#   ./build_deb.sh 2.0.0
-#
-# Output:
-#   dist/wuji-hand2-glove-teleop_<VERSION>-1_<arch>.deb
-
 set -euo pipefail
-
-VERSION=${1:-2.0.0}
-DEB_VERSION=$(echo "${VERSION}" | sed 's/-/~/g')
-ARCH=$(dpkg --print-architecture)
-PACKAGE_NAME="wuji-hand2-glove-teleop"
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUT_DIR="${ROOT}/dist"
-STAGE="${ROOT}/.deb_stage"
-PKG_DIR="${STAGE}/${PACKAGE_NAME}_${DEB_VERSION}-1_${ARCH}"
-INSTALL_ROOT="${PKG_DIR}/opt/wuji-hand2-glove-teleop"
-
-echo "Building ${PACKAGE_NAME} ${DEB_VERSION}-1 (${ARCH})..."
-
-rm -rf "${STAGE}"
-mkdir -p "${INSTALL_ROOT}/retargeting" \
-         "${INSTALL_ROOT}/wuji_hand_2" \
-         "${PKG_DIR}/DEBIAN" \
-         "${PKG_DIR}/usr/bin" \
-         "${OUT_DIR}"
-
-# --- payload ---
-install -m 0644 "${ROOT}/README.md" "${INSTALL_ROOT}/README.md"
-install -m 0644 "${ROOT}/LICENSE" "${INSTALL_ROOT}/LICENSE"
-
-for f in \
-  0.retarget_session.py \
-  1.teleop_real.py \
-  2.teleop_tuned.py \
-  3.save_home.py \
-  home_pose_service.py \
-  wujihand2_ros_driver.py
-do
-  install -m 0644 "${ROOT}/examples/python/retargeting/${f}" \
-    "${INSTALL_ROOT}/retargeting/${f}"
+version="${1:-2.2.0}"
+arch="${2:-arm64}"
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Version must be X.Y.Z'; exit 2; }
+[[ $arch == arm64 || $arch == amd64 || $arch == all ]] || { echo 'Architecture must be arm64/amd64/all'; exit 2; }
+root="$(cd -- "$(dirname -- "$0")" && pwd)"
+mkdir -p "$root/dist" "$root/build"
+stage="$(mktemp -d "$root/build/deb.XXXXXX")"
+# Unique staging paths make parallel builds safe; retain staging for inspection.
+app="$stage/opt/kernelmind/wuji-hand2"
+mkdir -p "$app" "$stage/DEBIAN" "$stage/usr/bin" "$stage/etc/wuji-hand2" "$stage/usr/lib/systemd/user" "$stage/usr/share/doc/wuji-hand2-glove-teleop"
+for dir in retargeting wuji_hand_2 wuji_glove; do
+ mkdir -p "$app/$dir"
+ for f in "$root/examples/python/$dir/"*.py; do install -m 644 "$f" "$app/$dir/"; done
 done
-
-for f in \
-  0.subscribe_callback.py \
-  1.subscribe_async.py \
-  2.publish.py \
-  3.fingertip_typed.py \
-  change_hand_ip_to_10.py
-do
-  install -m 0644 "${ROOT}/examples/python/wuji_hand_2/${f}" \
-    "${INSTALL_ROOT}/wuji_hand_2/${f}"
+for dir in tools config integration pose_tools pose_web; do
+ mkdir -p "$app/$dir"
+ for f in "$root/$dir/"*; do
+   [[ -f "$f" ]] || continue
+   case "$(basename "$f")" in test_*|*.log|*_results.json) continue ;; esac
+   install -m 644 "$f" "$app/$dir/"
+ done
 done
-
-write_wrapper() {
-  local name="$1"
-  local rel="$2"
-  local abs="/opt/wuji-hand2-glove-teleop/${rel}"
-  cat > "${PKG_DIR}/usr/bin/${name}" <<EOF
-#!/usr/bin/env bash
-# ${name} — ${rel}
-set -euo pipefail
-PY="\${WUJI_PYTHON:-python3}"
-cd "\$(dirname "${abs}")"
-exec "\${PY}" "${abs}" "\$@"
-EOF
-  chmod 0755 "${PKG_DIR}/usr/bin/${name}"
-}
-
-write_wrapper wujihand2-teleop              retargeting/2.teleop_tuned.py
-write_wrapper wujihand2-teleop-real         retargeting/1.teleop_real.py
-write_wrapper wujihand2-ros-driver          retargeting/wujihand2_ros_driver.py
-write_wrapper wujihand2-save-home           retargeting/3.save_home.py
-write_wrapper wujihand2-change-ip           wuji_hand_2/change_hand_ip_to_10.py
-write_wrapper wujihand2-fingertip           wuji_hand_2/3.fingertip_typed.py
-
-cat > "${PKG_DIR}/DEBIAN/control" <<EOF
-Package: ${PACKAGE_NAME}
-Version: ${DEB_VERSION}-1
-Section: misc
+install -m 644 "$root/config/config.env" "$stage/etc/wuji-hand2/config.env"
+install -m 644 "$root/packaging/wuji-pose-web.service" "$stage/usr/lib/systemd/user/"
+install -m 644 "$root/README.md" "$root/CHANGELOG.md" "$root/LICENSE" "$stage/usr/share/doc/wuji-hand2-glove-teleop/"
+cp -r "$root/docs" "$stage/usr/share/doc/wuji-hand2-glove-teleop/"
+install -m 644 "$root/README.md" "$root/LICENSE" "$app/"
+for name in wuji-setup-runtime wuji-hand2-check wuji-hand2-sdk wuji-hand2-tuned wuji-hand2-glove wuji-hand2-driver wuji-hand2-bag wuji-both-record wuji-left-record wuji-right-record wuji-both-poses wuji-left-poses wuji-right-poses wuji-pose-web wujihand2-teleop wujihand2-teleop-real wujihand2-ros-driver wujihand2-save-home wujihand2-fingertip; do
+ install -m 755 "$root/packaging/launcher" "$stage/usr/bin/$name"
+done
+sed -i 's|/usr/local/bin/wuji-pose-web|/usr/bin/wuji-pose-web|' "$stage/usr/lib/systemd/user/wuji-pose-web.service"
+cat > "$stage/DEBIAN/control" <<CONTROL
+Package: wuji-hand2-glove-teleop
+Version: $version-1
+Section: science
 Priority: optional
-Architecture: ${ARCH}
-Depends: python3 (>= 3.10)
-Recommends: ros-humble-rclpy, ros-humble-sensor-msgs, ros-humble-std-msgs, ros-humble-std-srvs
-Maintainer: continuity3 <continuity3@users.noreply.github.com>
-Homepage: https://github.com/continuity3/wuji-hand2-glove-teleop
-Description: Wuji Hand 2 glove teleoperation stack
- Python teleop + ROS2 bridge for Wuji Hand 2 (Ethernet) driven by Wuji Glove.
- Installs scripts under /opt/wuji-hand2-glove-teleop and CLI wrappers
- (wujihand2-teleop, wujihand2-ros-driver, …).
- Requires pip package wuji-sdk (and numpy, pynput) in the Python used via
- WUJI_PYTHON or PATH.
-EOF
-
-cat > "${PKG_DIR}/DEBIAN/postinst" <<'EOF'
-#!/bin/sh
-set -e
-echo "wuji-hand2-glove-teleop installed under /opt/wuji-hand2-glove-teleop"
-echo "  export WUJI_PYTHON=/path/to/python   # interpreter with wuji-sdk"
-echo "  wujihand2-teleop --drive sdk --hand-model wujihand2 --no-footkey"
-echo "  wujihand2-ros-driver --side both --no-footkey"
-exit 0
-EOF
-chmod 0755 "${PKG_DIR}/DEBIAN/postinst"
-
-DEB_FILENAME="${PACKAGE_NAME}_${DEB_VERSION}-1_${ARCH}.deb"
-fakeroot dpkg-deb --build "${PKG_DIR}" "${OUT_DIR}/${DEB_FILENAME}"
-
-rm -rf "${STAGE}"
-
-echo ""
-echo "Package built:"
-echo "  ${OUT_DIR}/${DEB_FILENAME}"
-echo ""
-echo "Install:"
-echo "  sudo dpkg -i ${OUT_DIR}/${DEB_FILENAME}"
-echo "  export WUJI_PYTHON=\$(which python)   # must have wuji-sdk"
+Architecture: $arch
+Depends: python3 (>= 3.10), python3-numpy, python3-venv, bash
+Recommends: ros-humble-rclpy, ros-humble-sensor-msgs, ros-humble-std-msgs, ros-humble-std-srvs, ros-humble-rosbag2-py, ros-humble-ros2bag, ros-humble-rosbag2-storage-mcap, ros-humble-rmw-fastrtps-cpp
+Maintainer: Gento Teleoperation Apex <Gento-Teleoperation-Apex@users.noreply.github.com>
+Homepage: https://github.com/Gento-Teleoperation-Apex/wuji-hand2-glove-teleop
+Description: Wuji Hand2 dual glove SDK and ROS teleoperation suite
+ Connection checks, SDK baseline and tuned control, F7 or no-footkey,
+ ROS driver, manual teaching, independent pose selection, web UI and bags.
+ Requires external wuji-sdk 2026.8.31; setup command provided. No autostart.
+CONTROL
+printf '/etc/wuji-hand2/config.env\n' > "$stage/DEBIAN/conffiles"
+install -m 755 "$root/packaging/postinst" "$stage/DEBIAN/postinst"
+(cd "$stage" && find opt usr etc -type f -print0 | sort -z | xargs -0 md5sum) > "$stage/DEBIAN/md5sums"
+dpkg-deb --root-owner-group --build "$stage" "$root/dist/wuji-hand2-glove-teleop_${version}-1_${arch}.deb"
+sha256sum "$root/dist/wuji-hand2-glove-teleop_${version}-1_${arch}.deb"

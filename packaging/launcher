@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -e
+root="${WUJI_ROOT:-/opt/kernelmind/wuji-hand2}"
+source "$root/config/env.sh"
+name="$(basename "$0")"
+case "$name" in
+ wuji-setup-runtime) exec bash "$root/tools/setup-runtime.sh" "$@" ;;
+ wuji-hand2-check) script=tools/check_devices.py; defaults=() ;;
+ wuji-hand2-sdk) script=retargeting/2.teleop_tuned.py; defaults=(--drive sdk --profile official --no-home) ;;
+ wuji-hand2-tuned|wujihand2-teleop) script=retargeting/2.teleop_tuned.py; defaults=(--drive sdk --profile tuned --no-home) ;;
+ wuji-hand2-glove) script=retargeting/2.teleop_tuned.py; defaults=(--drive ros --profile tuned --hand-model wujihand2 --no-home) ;;
+ wuji-hand2-driver|wujihand2-ros-driver) script=retargeting/wujihand2_ros_driver.py; defaults=(); [[ -z ${WUJI_LEFT_SN:-} ]] || defaults+=(--left-sn "$WUJI_LEFT_SN"); [[ -z ${WUJI_RIGHT_SN:-} ]] || defaults+=(--right-sn "$WUJI_RIGHT_SN") ;;
+ wuji-*-record) side="${name#wuji-}"; side="${side%-record}"; script=pose_tools/record_poses.py; defaults=(--side "$side") ;;
+ wuji-*-poses) side="${name#wuji-}"; side="${side%-poses}"; script=pose_tools/play_poses.py; defaults=(--side "$side") ;;
+ wuji-pose-web) script=pose_web/server.py; defaults=() ;;
+ wuji-hand2-bag) script=tools/hand_bag.py; defaults=() ;;
+ wujihand2-teleop-real) script=retargeting/1.teleop_real.py; defaults=() ;;
+ wujihand2-save-home) script=retargeting/3.save_home.py; defaults=() ;;
+ wujihand2-fingertip) script=wuji_hand_2/3.fingertip_typed.py; defaults=() ;;
+ *) echo "Unknown command: $name" >&2; exit 2 ;;
+esac
+exec "$WUJI_PYTHON" "$root/$script" "${defaults[@]}" "$@"

@@ -28,3 +28,9 @@ Thumbs.db
 examples/python/retargeting/home_pose.json
 *.bin
 .wuji/
+
+# Generated test reports / personal captures
+*_results.json
+ros_test_server.log
+*.mcap
+*.db3
