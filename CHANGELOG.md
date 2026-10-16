@@ -1,5 +1,10 @@
 # Application changelog
 
+## 2.3.0-test.2 — 2026-10-16 (prerelease; packaging correction)
+
+- Use GitHub-safe `2.3.0-test.2-1` download filenames while retaining Debian package version `2.3.0~test.2-1`. GitHub normalized the tilde in test.1 filenames, breaking the documented filename/checksum mapping.
+- Update install commands and checksum filenames; rebuild both architectures. Teleoperation/network code is unchanged from test.1; physical hardware validation is still pending.
+
 ## 2.3.0-test.1 — 2026-10-16 (prerelease; hardware validation pending)
 
 - Add `wuji-glove-network --apply` for both hand generations: discover glove IPv4 endpoints, locate physical Ethernet interfaces by ARP, select conflict-checked host addresses, verify direct routes and SDK identity/skeleton data, and roll back additions on failure. Preserve glove IPs, existing host addresses and default gateway; no motor enable or automatic service startup.

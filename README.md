@@ -1,6 +1,6 @@
-# Wuji Hand 一/二代手套遥操 · 2.3.0-test.1
+# Wuji Hand 一/二代手套遥操 · 2.3.0-test.2
 
-> **测试版，尚未进行实体手/手套验收。** 本次仅发布 `v2.3.0-test.1` 预发布版；待实体网络和两代遥操实测通过后再发布正式 `v2.3.0`。Debian 包版本使用 `2.3.0~test.1-1`，后续可正常升级到 `2.3.0-1`。
+> **测试版，尚未进行实体手/手套验收。** 本次仅发布 `v2.3.0-test.2` 预发布版；待实体网络和两代遥操实测通过后再发布正式 `v2.3.0`。Debian 包版本使用 `2.3.0~test.2-1`，后续可正常升级到 `2.3.0-1`。
 
 支持一代 USB 手、二代以太网手使用同一款 Wuji 手套。2.3.0 新增手套网络自动匹配：发现手套后，为机器人有线网卡补充同网段地址，解决“扫描到了手套，连接却误走 Wi-Fi 而超时”的问题。保留机器人原 IP，手套 IP 不变。二代另外提供优化遥操、ROS、示教、姿态切换和网页功能。目标环境为 Ubuntu 22.04 / Jetson AGX Orin 或 Linux x86_64。
 
@@ -10,11 +10,11 @@
 
 先接好电源、手和手套。一代手使用 USB；二代手通过以太网连接，手端网段需已可达。手套接机器人的有线接口或同一交换机。默认支持自动发现、每侧一只手和一只手套；只接单侧也可以。先退出 Studio 或其他控制进程。
 
-下载 [v2.3.0-test.1 测试安装包](https://github.com/Gento-Teleoperation-Apex/wuji-hand2-glove-teleop/releases/tag/v2.3.0-test.1)。Jetson 用 `arm64`，PC 通常用 `amd64`（`dpkg --print-architecture` 查看）。在安装包所在目录执行：
+下载 [v2.3.0-test.2 测试安装包](https://github.com/Gento-Teleoperation-Apex/wuji-hand2-glove-teleop/releases/tag/v2.3.0-test.2)。Jetson 用 `arm64`，PC 通常用 `amd64`（`dpkg --print-architecture` 查看）。在安装包所在目录执行：
 
 ```bash
 # 1. 安装应用（PC 将 arm64 换成 amd64）
-sudo apt install ./wuji-hand2-glove-teleop_2.3.0~test.1-1_arm64.deb
+sudo apt install ./wuji-hand2-glove-teleop_2.3.0-test.2-1_arm64.deb
 
 # 2. 安装 SDK 环境，需要联网；普通用户运行，不加 sudo
 wuji-setup-runtime
@@ -106,10 +106,10 @@ wuji-teleop --hand-model wujihand2 --side right \
 
 ## 0. 安装与首次配置
 
-从本仓库 [Releases](https://github.com/Gento-Teleoperation-Apex/wuji-hand2-glove-teleop/releases) 下载 `wuji-hand2-glove-teleop_2.3.0~test.1-1_arm64.deb`（Jetson）。PC x86_64 使用 amd64 包。
+从本仓库 [Releases](https://github.com/Gento-Teleoperation-Apex/wuji-hand2-glove-teleop/releases) 下载 `wuji-hand2-glove-teleop_2.3.0-test.2-1_arm64.deb`（Jetson）。PC x86_64 使用 amd64 包。
 
 ```bash
-sudo apt install ./wuji-hand2-glove-teleop_2.3.0~test.1-1_arm64.deb
+sudo apt install ./wuji-hand2-glove-teleop_2.3.0-test.2-1_arm64.deb
 # 已有 ~/.venvs/wuji 且安装了相应 SDK，可跳过这一步
 wuji-setup-runtime
 ```
@@ -306,8 +306,8 @@ wuji-hand2-bag play ~/hand-bags/session01 --side both --rate 0.5
 ## 构建与测试
 
 ```bash
-./build_deb.sh 2.3.0~test.1 arm64
-./build_deb.sh 2.3.0~test.1 amd64
+./build_deb.sh 2.3.0~test.2 arm64
+./build_deb.sh 2.3.0~test.2 amd64
 bash tests/run_tests.sh
 ```
 

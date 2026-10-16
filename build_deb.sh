@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-version="${1:-2.3.0~test.1}"
+version="${1:-2.3.0~test.2}"
 arch="${2:-arm64}"
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(~test\.[0-9]+)?$ ]] || { echo 'Version must be X.Y.Z or X.Y.Z~test.N'; exit 2; }
 [[ $arch == arm64 || $arch == amd64 || $arch == all ]] || { echo 'Architecture must be arm64/amd64/all'; exit 2; }
+# GitHub normalizes '~' in asset filenames; keep Debian ordering in control,
+# but use an upload-stable '-' in the download filename.
+file_version="${version/\~/-}"
 root="$(cd -- "$(dirname -- "$0")" && pwd)"
 mkdir -p "$root/dist" "$root/build"
 stage="$(mktemp -d "$root/build/deb.XXXXXX")"
@@ -49,5 +52,5 @@ CONTROL
 printf '/etc/wuji-hand2/config.env\n' > "$stage/DEBIAN/conffiles"
 install -m 755 "$root/packaging/postinst" "$stage/DEBIAN/postinst"
 (cd "$stage" && find opt usr etc -type f -print0 | sort -z | xargs -0 md5sum) > "$stage/DEBIAN/md5sums"
-dpkg-deb --root-owner-group --build "$stage" "$root/dist/wuji-hand2-glove-teleop_${version}-1_${arch}.deb"
-sha256sum "$root/dist/wuji-hand2-glove-teleop_${version}-1_${arch}.deb"
+dpkg-deb --root-owner-group --build "$stage" "$root/dist/wuji-hand2-glove-teleop_${file_version}-1_${arch}.deb"
+sha256sum "$root/dist/wuji-hand2-glove-teleop_${file_version}-1_${arch}.deb"
