@@ -10,11 +10,14 @@ for arg in sys.argv[1:]:
     with tempfile.TemporaryDirectory() as tmp:
         stage=Path(tmp);subprocess.run(['dpkg-deb','-R',str(deb),str(stage)],check=True)
         app=stage/'opt/kernelmind/wuji-hand2'
-        for name in ['retargeting/2.teleop_tuned.py','retargeting/wujihand2_ros_driver.py','tools/check_devices.py','tools/hand_bag.py','pose_tools/record_poses.py','pose_tools/play_poses.py','pose_tools/pose_common.py','pose_web/server.py','pose_web/index.html']:
+        for name in ['retargeting/1.teleop_real.py','retargeting/2.teleop_tuned.py','retargeting/wujihand2_ros_driver.py','tools/glove_network.py','wuji_hand/0.subscribe.py','tools/check_devices.py','tools/hand_bag.py','pose_tools/record_poses.py','pose_tools/play_poses.py','pose_tools/pose_common.py','pose_web/server.py','pose_web/index.html']:
             assert (app/name).is_file(),name
         assert (stage/'DEBIAN/conffiles').read_text().strip()=='/etc/wuji-hand2/config.env'
         assert not list(stage.glob('home/**/*')) and not list(app.rglob('*poses.json'))
         assert not (app/'config/pairing.env').exists()
+        for name in ['wuji-glove-network', 'wuji-teleop', 'wuji-hand1-sdk']:
+            assert (stage/'usr/bin'/name).is_file(), name
+        assert 'iputils-arping' in (stage/'DEBIAN/control').read_text()
         for line in (stage/'DEBIAN/md5sums').read_text().splitlines():
             digest,path=line.split(maxsplit=1)
             assert hashlib.md5((stage/path).read_bytes()).hexdigest()==digest,path

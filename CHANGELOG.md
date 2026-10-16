@@ -1,5 +1,12 @@
 # Application changelog
 
+## 2.3.0-test.1 — 2026-10-16 (prerelease; hardware validation pending)
+
+- Add `wuji-glove-network --apply` for both hand generations: discover glove IPv4 endpoints, locate physical Ethernet interfaces by ARP, select conflict-checked host addresses, verify direct routes and SDK identity/skeleton data, and roll back additions on failure. Preserve glove IPs, existing host addresses and default gateway; no motor enable or automatic service startup.
+- Add `wuji-teleop` and `wuji-hand1-sdk`; retain `wujihand2-teleop-real`. Expose generation/side selection and separate gen-1 current/LowPass vs gen-2 current/MIT/EMA options. Reject ambiguous pairs and invalid numeric values; stop on stale/invalid skeletons and clean up failed enables.
+- Package gen-1 USB examples and network dependencies; document the shared four-step startup, temporary-address lifetime, network boundaries and parameter locations for the baseline, tuned and ROS paths.
+- Add network planning, rollback, pairing and motor-parameter regressions. See `docs/VALIDATION.md` for the tested scope and hardware limitations.
+
 ## 2.2.0 — 2026-09-28
 
 - Package the deployed dual-hand ROS driver, paired gloves, B/X manual teaching, independent right 1/2/3 and left A/S/D pose switching, and web control.

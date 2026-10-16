@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -eo pipefail
 root="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+/usr/bin/python3 "$root/tests/test_glove_network.py"
+/usr/bin/python3 "$root/tests/test_teleop_real.py"
 /usr/bin/python3 "$root/tests/test_sdk_direct.py"
 /usr/bin/python3 "$root/tests/test_connection_check.py"
 source /opt/ros/humble/setup.bash

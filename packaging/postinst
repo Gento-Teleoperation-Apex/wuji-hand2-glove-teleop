@@ -12,6 +12,6 @@ if [ "$1" = configure ]; then
     fi
   done
 fi
-echo 'Wuji Hand2 installed. No hardware or services started.'
-echo 'Configure /etc/wuji-hand2/config.env; run wuji-setup-runtime if SDK is missing.'
+echo 'Wuji Hand 1/2 installed. No hardware, network changes or services started.'
+echo 'Run wuji-setup-runtime, then wuji-glove-network --apply; see the four-step guide.'
 echo 'Guide: /usr/share/doc/wuji-hand2-glove-teleop/README.md'

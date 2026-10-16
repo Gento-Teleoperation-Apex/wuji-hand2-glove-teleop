@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-version="${1:-2.2.0}"
+version="${1:-2.3.0~test.1}"
 arch="${2:-arm64}"
-[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Version must be X.Y.Z'; exit 2; }
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(~test\.[0-9]+)?$ ]] || { echo 'Version must be X.Y.Z or X.Y.Z~test.N'; exit 2; }
 [[ $arch == arm64 || $arch == amd64 || $arch == all ]] || { echo 'Architecture must be arm64/amd64/all'; exit 2; }
 root="$(cd -- "$(dirname -- "$0")" && pwd)"
 mkdir -p "$root/dist" "$root/build"
@@ -10,7 +10,7 @@ stage="$(mktemp -d "$root/build/deb.XXXXXX")"
 # Unique staging paths make parallel builds safe; retain staging for inspection.
 app="$stage/opt/kernelmind/wuji-hand2"
 mkdir -p "$app" "$stage/DEBIAN" "$stage/usr/bin" "$stage/etc/wuji-hand2" "$stage/usr/lib/systemd/user" "$stage/usr/share/doc/wuji-hand2-glove-teleop"
-for dir in retargeting wuji_hand_2 wuji_glove; do
+for dir in retargeting wuji_hand wuji_hand_2 wuji_glove; do
  mkdir -p "$app/$dir"
  for f in "$root/examples/python/$dir/"*.py; do install -m 644 "$f" "$app/$dir/"; done
 done
@@ -27,7 +27,7 @@ install -m 644 "$root/packaging/wuji-pose-web.service" "$stage/usr/lib/systemd/u
 install -m 644 "$root/README.md" "$root/CHANGELOG.md" "$root/LICENSE" "$stage/usr/share/doc/wuji-hand2-glove-teleop/"
 cp -r "$root/docs" "$stage/usr/share/doc/wuji-hand2-glove-teleop/"
 install -m 644 "$root/README.md" "$root/LICENSE" "$app/"
-for name in wuji-setup-runtime wuji-hand2-check wuji-hand2-sdk wuji-hand2-tuned wuji-hand2-glove wuji-hand2-driver wuji-hand2-bag wuji-both-record wuji-left-record wuji-right-record wuji-both-poses wuji-left-poses wuji-right-poses wuji-pose-web wujihand2-teleop wujihand2-teleop-real wujihand2-ros-driver wujihand2-save-home wujihand2-fingertip; do
+for name in wuji-setup-runtime wuji-glove-network wuji-teleop wuji-hand1-sdk wuji-hand2-check wuji-hand2-sdk wuji-hand2-tuned wuji-hand2-glove wuji-hand2-driver wuji-hand2-bag wuji-both-record wuji-left-record wuji-right-record wuji-both-poses wuji-left-poses wuji-right-poses wuji-pose-web wujihand2-teleop wujihand2-teleop-real wujihand2-ros-driver wujihand2-save-home wujihand2-fingertip; do
  install -m 755 "$root/packaging/launcher" "$stage/usr/bin/$name"
 done
 sed -i 's|/usr/local/bin/wuji-pose-web|/usr/bin/wuji-pose-web|' "$stage/usr/lib/systemd/user/wuji-pose-web.service"
@@ -37,12 +37,12 @@ Version: $version-1
 Section: science
 Priority: optional
 Architecture: $arch
-Depends: python3 (>= 3.10), python3-numpy, python3-venv, bash
+Depends: python3 (>= 3.10), python3-numpy, python3-venv, bash, iproute2, iputils-arping, sudo
 Recommends: ros-humble-rclpy, ros-humble-sensor-msgs, ros-humble-std-msgs, ros-humble-std-srvs, ros-humble-rosbag2-py, ros-humble-ros2bag, ros-humble-rosbag2-storage-mcap, ros-humble-rmw-fastrtps-cpp
 Maintainer: Gento Teleoperation Apex <Gento-Teleoperation-Apex@users.noreply.github.com>
 Homepage: https://github.com/Gento-Teleoperation-Apex/wuji-hand2-glove-teleop
-Description: Wuji Hand2 dual glove SDK and ROS teleoperation suite
- Connection checks, SDK baseline and tuned control, F7 or no-footkey,
+Description: Wuji Hand 1/2 glove network setup and teleoperation suite
+ Automatic host IPv4 matching for gloves, SDK baseline and tuned control,
  ROS driver, manual teaching, independent pose selection, web UI and bags.
  Requires external wuji-sdk 2026.8.31; setup command provided. No autostart.
 CONTROL

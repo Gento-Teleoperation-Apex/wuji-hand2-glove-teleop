@@ -35,9 +35,14 @@ Install the retargeting runtime dependencies first (numpy for keypoint/qpos arra
 
 Usage:
     python 1.teleop_real.py
+
+Application 2.3.0 additions: generation/side selection, validated motor options,
+duplicate-side rejection and stale-glove timeout. See --help. No footkey gate.
 """
 
+import argparse
 import contextlib
+import math
 import threading
 import time
 
@@ -55,6 +60,9 @@ from wuji_sdk import (
 )
 
 FPS = 120  # target loop rate (ceiling); a slow frame lowers the rate, never bursts.
+HAND1_EFFORT_LIMIT = 1.5
+HAND1_LOWPASS_HZ = 5.0
+STALE_TIMEOUT = 1.0
 # Hand 2 has no realtime LowPass like gen-1; EMA on qpos reduces command chatter.
 HAND2_QPOS_EMA = 0.35
 HAND2_KP = 5.0
@@ -89,16 +97,13 @@ def configure_wuji_hand_2(hand):
     hand.mit_params().set((HAND2_KP, HAND2_KD))  # (kp, kd), broadcast to all joints
     hand.enable()
     if not wait_hand2_enabled(hand):
-        print(
-            f"[{hand.serial_number}] enable timeout — "
-            "motors not all Enabled; motion may stutter"
-        )
+        raise RuntimeError(f"[{hand.serial_number}] enable timeout")
     return HandModel.WujiHand2
 
 
 def configure_wuji_hand(hand):
     """Configure + enable a first-gen Wuji Hand; return the retarget HandModel."""
-    hand.set_all_effort_limit(1.5)  # Amps
+    hand.set_all_effort_limit(HAND1_EFFORT_LIMIT)  # Amps
     hand.enable()
     return HandModel.WujiHand
 
@@ -170,43 +175,54 @@ def teleop(glove, model, send, side, stop, smooth_qpos: bool = False):
     q_filt = None
     n = 0
     t0 = time.monotonic()
-    while not stop.is_set():
-        frame_start = time.monotonic()
-        kp = read_keypoints(skeleton_sub)
-        if kp is None:
-            kp = last_kp  # no fresh frame: hold the last pose
+    last_frame_time = t0
+    try:
+        while not stop.is_set():
+            frame_start = time.monotonic()
+            kp = read_keypoints(skeleton_sub)
             if kp is None:
-                time.sleep(budget)  # nothing yet — wait out the budget
-                continue
-        else:
-            last_kp = kp
-        qpos = session.step(kp)  # (20,) firmware order
-        if smooth_qpos:
-            if q_filt is None:
-                q_filt = qpos.copy()
+                if time.monotonic() - last_frame_time > STALE_TIMEOUT:
+                    raise RuntimeError(f"[{side}] no fresh glove skeleton for {STALE_TIMEOUT}s")
+                kp = last_kp  # no fresh frame: hold the last pose
+                if kp is None:
+                    time.sleep(budget)  # nothing yet — wait out the budget
+                    continue
             else:
-                q_filt = (1.0 - HAND2_QPOS_EMA) * q_filt + HAND2_QPOS_EMA * qpos
-            send(q_filt.tolist())
-        else:
-            send(qpos.tolist())
-        n += 1
-        if n % 240 == 0:
-            hz = n / max(time.monotonic() - t0, 1e-6)
-            print(f"[{side}] loop ~{hz:.0f} Hz", flush=True)
-        dt = time.monotonic() - frame_start
-        if dt < budget:
-            time.sleep(budget - dt)
+                if kp.shape != (21, 3) or not np.isfinite(kp).all():
+                    raise ValueError('Invalid glove skeleton')
+                last_kp = kp
+                last_frame_time = time.monotonic()
+            qpos = np.asarray(session.step(kp))  # (20,) firmware order
+            if qpos.shape != (20,) or not np.isfinite(qpos).all():
+                raise ValueError('Invalid retarget output')
+            if smooth_qpos:
+                if q_filt is None:
+                    q_filt = qpos.copy()
+                else:
+                    q_filt = (1.0 - HAND2_QPOS_EMA) * q_filt + HAND2_QPOS_EMA * qpos
+                send(q_filt.tolist())
+            else:
+                send(qpos.tolist())
+            n += 1
+            if n % 240 == 0:
+                hz = n / max(time.monotonic() - t0, 1e-6)
+                print(f"[{side}] loop ~{hz:.0f} Hz", flush=True)
+            dt = time.monotonic() - frame_start
+            if dt < budget:
+                time.sleep(budget - dt)
+    finally:
+        skeleton_sub.close()
 
 
 def run_pair(glove, hand, side, stop):
     """Enable one hand and stream glove keypoints into it until ``stop`` is set."""
     is_hand2 = isinstance(hand, WujiHand2)
-    model = configure_wuji_hand_2(hand) if is_hand2 else configure_wuji_hand(hand)
     print(f"[{side}] glove={glove.serial_number} hand={hand.serial_number}")
 
     # Open the hand's command channel first — before teleop() builds the
     # retargeting session — so device communication remains active during setup.
     try:
+        model = configure_wuji_hand_2(hand) if is_hand2 else configure_wuji_hand(hand)
         if is_hand2:
             publisher = hand.joint_command().publish()
             cmds = [JointCommand(0.0, 0.0, 0.0) for _ in range(20)]
@@ -228,7 +244,7 @@ def run_pair(glove, hand, side, stop):
             finally:
                 publisher.close()
         else:
-            with hand.realtime_controller(LowPass(cutoff_hz=5.0)) as controller:
+            with hand.realtime_controller(LowPass(cutoff_hz=HAND1_LOWPASS_HZ)) as controller:
                 teleop(
                     glove,
                     model,
@@ -241,14 +257,16 @@ def run_pair(glove, hand, side, stop):
             hand.disable()
 
 
-def run_teleop(manager) -> int:
+def run_teleop(manager, hand_model="auto", requested_side="auto") -> int:
     """Connect matching glove+hand pairs and teleoperate until interrupted."""
 
     glove_devs = []
     hand_devs = []
     for d in manager.scan():
         print(f"  SN={d.sn}, Type={d.device_type}, Address={d.address}")
-        if d.device_type in (DeviceType.WujiHand2, DeviceType.WujiHand):
+        allowed = ((DeviceType.WujiHand, DeviceType.WujiHand2) if hand_model == "auto" else
+                   (DeviceType.WujiHand,) if hand_model == "wujihand" else (DeviceType.WujiHand2,))
+        if d.device_type in allowed:
             hand_devs.append(d)
         elif d.device_type == DeviceType.WujiGlove:
             glove_devs.append(d)
@@ -263,27 +281,43 @@ def run_teleop(manager) -> int:
     gloves_by_side: dict[str, object] = {}
     for d in glove_devs:
         glove = manager.connect(sn=d.sn, device_name=f"glove_{d.sn}")
+        if glove.serial_number != d.sn:
+            raise RuntimeError(f"Glove SN mismatch at {d.address}; check duplicate IPs")
         side = parse_side(glove.hand_side().get())
         if side is None:
             print(f"Skip glove {d.sn}: unknown hand_side")
             continue
+        if requested_side in ("left", "right") and side != requested_side:
+            continue
+        if side in gloves_by_side:
+            raise RuntimeError(f"Multiple {side} gloves; connect only one per side")
         gloves_by_side[side] = glove
 
     hands_by_side: dict[str, object] = {}
     for d in hand_devs:
         hand = manager.connect(sn=d.sn, device_name=f"hand_{d.sn}")
+        if hand.serial_number != d.sn:
+            raise RuntimeError(f"Hand SN mismatch at {d.address}")
         side = hand_side(hand)
         if side is None:
             print(f"Skip hand {d.sn}: unknown handedness")
             continue
+        if requested_side in ("left", "right") and side != requested_side:
+            continue
+        if side in hands_by_side:
+            raise RuntimeError(f"Multiple {side} hands; select --hand-model or disconnect extras")
         hands_by_side[side] = hand
 
     pairs = []
     for side in ("left", "right"):
+        if requested_side in ("left", "right") and side != requested_side:
+            continue
         glove = gloves_by_side.get(side)
         hand = hands_by_side.get(side)
         if glove is not None and hand is not None:
             pairs.append((glove, hand, side))
+        elif requested_side != "auto":
+            raise RuntimeError(f"Missing requested {side} glove/hand pair")
         elif glove is not None or hand is not None:
             missing = "hand" if glove is not None else "glove"
             print(f"Skip {side}: no matching {missing}")
@@ -326,7 +360,39 @@ def run_teleop(manager) -> int:
     return 0
 
 
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description="Wuji Hand 1/2 SDK teleop; automatically enables matched hands, no footkey.")
+    p.add_argument('--hand-model', choices=['auto', 'wujihand', 'wujihand2'], default='auto')
+    p.add_argument('--side', choices=['auto', 'left', 'right', 'both'], default='auto',
+                   help='auto: all complete pairs; both: require both pairs')
+    for flag, default, help_ in [
+        ('fps', 120., 'Loop ceiling, Hz (not a guaranteed device rate)'),
+        ('hand1-effort-limit', 1.5, 'Gen-1 current limit, A'),
+        ('hand1-lowpass-hz', 5., 'Gen-1 realtime LowPass cutoff, Hz'),
+        ('hand2-effort-limit', 1.5, 'Gen-2 current limit, A'),
+        ('hand2-kp', 5., 'Gen-2 MIT kp'),
+        ('hand2-kd', .15, 'Gen-2 MIT kd'),
+        ('hand2-ema', .35, 'Gen-2 EMA alpha, 0 < alpha <= 1'),
+        ('stale-timeout', 1., 'Stop after missing glove frames for this many seconds'),
+    ]:
+        p.add_argument('--' + flag, type=float, default=default, help=help_)
+    args = p.parse_args(argv)
+    for key, value in vars(args).items():
+        if isinstance(value, float) and (not math.isfinite(value) or value <= 0):
+            p.error(f'--{key.replace("_", "-")} must be finite and > 0')
+    if args.hand2_ema > 1:
+        p.error('--hand2-ema must be <= 1')
+    return args
+
+
 def main() -> int:
+    global FPS, HAND1_EFFORT_LIMIT, HAND1_LOWPASS_HZ, HAND2_EFFORT_LIMIT
+    global HAND2_KP, HAND2_KD, HAND2_QPOS_EMA, STALE_TIMEOUT
+    args = parse_args()
+    FPS = args.fps
+    HAND1_EFFORT_LIMIT, HAND1_LOWPASS_HZ = args.hand1_effort_limit, args.hand1_lowpass_hz
+    HAND2_EFFORT_LIMIT, HAND2_KP, HAND2_KD = args.hand2_effort_limit, args.hand2_kp, args.hand2_kd
+    HAND2_QPOS_EMA, STALE_TIMEOUT = args.hand2_ema, args.stale_timeout
     manager = SdkManager.instance()
 
     # Run the glove on the SDK built-in default hand URDF: the default SDK user
@@ -336,8 +402,9 @@ def main() -> int:
     previous_user = use_builtin_urdf_user(manager)
     exit_code = 0
     try:
-        exit_code = run_teleop(manager)
+        exit_code = run_teleop(manager, args.hand_model, args.side)
     finally:
+        manager.disconnect_all()
         try:
             manager.switch_user(previous_user["user_id"])
         except Exception as exc:
