@@ -1,7 +1,8 @@
 """Real ip/arping regression in disposable user+network namespaces only.
 
 Usage: unshare -Urn python3 tests/test_glove_network_namespace.py /path/to/arping
-No SDK or physical devices. Wired detection is overridden for synthetic veths.
+No SDK or physical devices. Only the sysfs physical-device check is overridden
+for synthetic veths; production link/address parsing and wired filtering run.
 """
 import os
 import json
@@ -29,7 +30,7 @@ def main():
     network = object.__new__(LinuxNetwork)
     network.ip = '/usr/sbin/ip'
     network.arping = str(Path(sys.argv[1]).resolve())
-    network.wired = lambda r: r['ifname'] == 'eth0'  # veth instead of physical NIC
+    network.is_physical_wired = lambda name: name == 'eth0'  # veth instead of physical NIC
     peer = subprocess.Popen(['unshare', '-n', 'sleep', '120'])
     try:
         for _ in range(100):
@@ -54,6 +55,7 @@ def main():
         gloves = [Glove('G1', '192.168.1.100:50001', IPv4Address('192.168.1.100')),
                   Glove('G2', '192.168.1.101:50001', IPv4Address('192.168.1.101'))]
         before = network.addresses()
+        assert [r['ifname'] for r in before if network.wired(r)] == ['eth0']
         assert network.route(gloves[0].host)['dev'] == 'wlan0'
         plan = build_plan(gloves, network)
         assert len(plan.additions) == 1 and plan.additions[0].cidr == '192.168.1.201/24', plan
@@ -77,7 +79,7 @@ def main():
             raise AssertionError('Expected failure')
         assert network.route(gloves[0].host)['dev'] == 'wlan0', 'Rollback did not restore route'
         assert not any('192.168.1.201' == a.get('local') for r in network.addresses() for a in r['addr_info'])
-        print('PASS: real ARP interface detection, occupied .200 skipped, .201 address/route, ping both peers, '
+        print('PASS: real link/address parsing and wired filtering, ARP interface detection, occupied .200 skipped, .201 address/route, ping both peers, '
               'idempotency, original IP/default gateway preservation, failure rollback; isolated namespaces only')
     finally:
         peer.terminate()

@@ -4,6 +4,7 @@ No host addresses or physical devices are modified by these tests.
 """
 import copy
 import ipaddress as ip
+import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace as NS
@@ -186,6 +187,47 @@ class PlanningTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             net.apply_plan(self.gloves, plan, self.network, MagicMock(side_effect=KeyboardInterrupt))
         self.assertEqual(original, self.network.rows)
+
+
+class LinuxInterfaceTests(unittest.TestCase):
+    def setUp(self):
+        self.network = object.__new__(net.LinuxNetwork)
+        self.network.ip = '/usr/sbin/ip'
+        # Real Ubuntu iproute2 shape: -4 address omits link_type entirely.
+        self.addr = [dict(ifindex=2, ifname='eth0', flags=['UP', 'LOWER_UP'],
+                         addr_info=[dict(family='inet', local='6.6.7.100', prefixlen=24)])]
+        self.links = [dict(ifindex=2, ifname='eth0', link_type='ether', flags=['UP', 'LOWER_UP']),
+                      dict(ifindex=3, ifname='eth1', link_type='ether', flags=['UP', 'LOWER_UP'])]
+
+    def output(self, command):
+        return NS(stdout=json.dumps(self.addr if 'address' in command else self.links))
+
+    def test_ipv4_address_output_missing_link_type_merges_link_information(self):
+        with patch.object(net, 'run', side_effect=self.output):
+            rows = self.network.addresses()
+        self.assertEqual(rows[0].get('link_type'), 'ether')
+        self.assertEqual(rows[0]['addr_info'][0]['local'], '6.6.7.100')
+
+    def test_ethernet_without_ipv4_still_available(self):
+        with patch.object(net, 'run', side_effect=self.output):
+            rows = self.network.addresses()
+        self.assertEqual(rows[1]['ifname'], 'eth1')
+        self.assertEqual(rows[1]['addr_info'], [])
+
+    def test_actual_wired_filter_accepts_merged_ethernet(self):
+        with patch.object(net, 'run', side_effect=self.output), \
+                patch.object(self.network, 'is_physical_wired', return_value=True):
+            rows = self.network.addresses()
+            self.assertTrue(self.network.wired(rows[0]))
+            self.assertTrue(self.network.wired(rows[1]))
+
+    def test_actual_wired_filter_still_rejects_invalid_links(self):
+        with patch.object(self.network, 'is_physical_wired', return_value=True):
+            for changes in [dict(link_type='loopback'), dict(flags=['UP']),
+                            dict(flags=['LOWER_UP']), dict(master='br0')]:
+                self.assertFalse(self.network.wired({**self.links[0], **changes}))
+        with patch.object(self.network, 'is_physical_wired', return_value=False):
+            self.assertFalse(self.network.wired(self.links[0]))
 
 
 class DiscoveryTests(unittest.TestCase):

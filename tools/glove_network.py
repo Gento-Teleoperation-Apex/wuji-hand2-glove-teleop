@@ -56,13 +56,21 @@ class LinuxNetwork:
             raise RuntimeError('需要 iproute2 / iputils-arping：sudo apt install iproute2 iputils-arping')
 
     def addresses(self):
-        return json.loads(run([self.ip, '-j', '-4', 'address', 'show']).stdout)
+        # Ubuntu's `ip -j -4 address` omits link_type. Read link metadata
+        # separately, including connected interfaces with no IPv4 address yet.
+        links = json.loads(run([self.ip, '-j', 'link', 'show']).stdout)
+        addresses = json.loads(run([self.ip, '-j', '-4', 'address', 'show']).stdout)
+        by_index = {row['ifindex']: row.get('addr_info', []) for row in addresses}
+        return [{**link, 'addr_info': by_index.get(link['ifindex'], [])} for link in links]
+
+    def is_physical_wired(self, interface):
+        path = Path('/sys/class/net') / interface
+        return (path / 'device').exists() and not (path / 'wireless').exists()
 
     def wired(self, row):
-        path = Path('/sys/class/net') / row['ifname']
         return (row.get('link_type') == 'ether' and 'UP' in row.get('flags', [])
                 and 'LOWER_UP' in row.get('flags', []) and not row.get('master')
-                and (path / 'device').exists() and not (path / 'wireless').exists())
+                and self.is_physical_wired(row['ifname']))
 
     def occupied(self, interface, host):
         # iputils DAD: 0 = no replies; 1 = an address owner replied; 2 = error.

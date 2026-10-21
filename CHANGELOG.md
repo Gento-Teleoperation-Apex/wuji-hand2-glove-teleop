@@ -1,5 +1,11 @@
 # Application changelog
 
+## 2.3.0-test.3 — 2026-10-21 (prerelease; Ethernet detection fix)
+
+- Fix false "no connected physical Ethernet interface" after successful glove discovery: Ubuntu `ip -j -4 address show` omits `link_type`. Merge `ip -j link show` metadata with IPv4 addresses by interface index, including interfaces without IPv4 addresses.
+- Keep physical wired/link-up checks and Wi-Fi/bridge exclusions. No device-IP or motor-control changes.
+- Add four regressions for real iproute2 output shape and interface filtering. Make the namespace integration test exercise production parsing/filtering instead of replacing the entire wired predicate; only sysfs physical-device classification is substituted for virtual veths.
+
 ## 2.3.0-test.2 — 2026-10-16 (prerelease; packaging correction)
 
 - Use GitHub-safe `2.3.0-test.2-1` download filenames while retaining Debian package version `2.3.0~test.2-1`. GitHub normalized the tilde in test.1 filenames, breaking the documented filename/checksum mapping.
