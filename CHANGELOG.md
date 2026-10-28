@@ -1,5 +1,10 @@
 # Application changelog
 
+## 2.3.0-test.5 — 2026-10-28 (prerelease; gen-1 SN check fix)
+
+- Fix gen-1 USB teleoperation rejecting a valid hand because the SDK object's `serial_number` is a product/model identifier, while scan reports the USB device SN. Gen-1 connection remains selected by the scanned SN; retain the serial-number equality check for gen-2.
+- This is a test release. The reported device output supports the root cause, but the fix has not been exercised on physical hardware.
+
 ## 2.3.0-test.4 — 2026-10-28 (prerelease; ARP bootstrap fallback)
 
 - When discovered gloves do not answer pre-address ARP, allow tentative host address setup on the sole physical wired candidate or an explicitly selected interface. Multiple unresolved candidates still fail; host-address collision and route checks remain.

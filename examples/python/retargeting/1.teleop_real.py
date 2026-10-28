@@ -296,7 +296,12 @@ def run_teleop(manager, hand_model="auto", requested_side="auto") -> int:
     hands_by_side: dict[str, object] = {}
     for d in hand_devs:
         hand = manager.connect(sn=d.sn, device_name=f"hand_{d.sn}")
-        if hand.serial_number != d.sn:
+        # Gen-1 WujiHand exposes its product/model identifier as
+        # `serial_number`; the USB discovery SN is available only on the
+        # discovered-device record. Connecting by d.sn already selects the
+        # requested unit, so comparing these values rejects valid gen-1 hands.
+        # Keep the identity check for gen-2, whose serial_number is the device SN.
+        if d.device_type == DeviceType.WujiHand2 and hand.serial_number != d.sn:
             raise RuntimeError(f"Hand SN mismatch at {d.address}")
         side = hand_side(hand)
         if side is None:

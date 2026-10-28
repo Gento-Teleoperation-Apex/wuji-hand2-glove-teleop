@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-version="${1:-2.3.0~test.4}"
+version="${1:-2.3.0~test.5}"
 arch="${2:-arm64}"
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(~test\.[0-9]+)?$ ]] || { echo 'Version must be X.Y.Z or X.Y.Z~test.N'; exit 2; }
 [[ $arch == arm64 || $arch == amd64 || $arch == all ]] || { echo 'Architecture must be arm64/amd64/all'; exit 2; }
