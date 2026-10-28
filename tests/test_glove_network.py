@@ -98,6 +98,54 @@ class PlanningTests(unittest.TestCase):
             net.build_plan(self.gloves, self.network)
         self.assertFalse(self.network.events)
 
+    def test_no_arp_on_unique_wired_interface_can_prepare_then_verify(self):
+        self.network.rows = [r for r in self.network.rows if r['ifname'] != 'eth10']
+        self.network.owners.clear()
+        plan = net.build_plan(self.gloves, self.network)
+        self.assertEqual(plan.interfaces, {'G1': 'eth0', 'G2': 'eth0'})
+        self.assertEqual(plan.additions, [net.Addition('eth0', '192.168.1.200/24')])
+        self.assertFalse(self.network.events)
+        verify = MagicMock()
+        net.apply_plan(self.gloves, plan, self.network, verify)
+        verify.assert_called_once()
+
+    def test_no_arp_explicit_interface_on_multinic_host(self):
+        self.network.owners.clear()
+        plan = net.build_plan(self.gloves, self.network, 'eth0')
+        self.assertEqual(plan.interfaces, {'G1': 'eth0', 'G2': 'eth0'})
+        self.assertEqual(plan.additions, [net.Addition('eth0', '192.168.1.200/24')])
+
+    def test_no_arp_sdk_failure_rolls_back(self):
+        self.network.owners.clear()
+        original = self.network.addresses()
+        plan = net.build_plan(self.gloves, self.network, 'eth0')
+        with self.assertRaisesRegex(RuntimeError, 'SDK timeout'):
+            net.apply_plan(self.gloves, plan, self.network, MagicMock(side_effect=RuntimeError('SDK timeout')))
+        self.assertEqual(original, self.network.rows)
+        self.assertEqual([event for event, _ in self.network.events], ['add', 'del'])
+
+    def test_no_arp_fallback_still_checks_host_address_conflicts(self):
+        self.network.owners = {('eth0', '192.168.1.200')}
+        plan = net.build_plan(self.gloves, self.network, 'eth0')
+        self.assertEqual(plan.additions, [net.Addition('eth0', '192.168.1.201/24')])
+
+    def test_no_arp_existing_address_is_verified_and_not_removed_on_failure(self):
+        self.network.owners.clear()
+        self.network.add(net.Addition('eth0', '192.168.1.200/24'))
+        self.network.events.clear()
+        plan = net.build_plan(self.gloves, self.network, 'eth0')
+        self.assertEqual(plan.additions, [])
+        with self.assertRaises(RuntimeError):
+            net.apply_plan(self.gloves, plan, self.network, MagicMock(side_effect=RuntimeError('SDK timeout')))
+        self.assertFalse(self.network.events)
+
+    def test_no_arp_fallback_still_rejects_overlapping_subnets(self):
+        self.network.owners.clear()
+        self.network.rows.append(row('wlan1', '192.168.1.20/24'))
+        with self.assertRaisesRegex(RuntimeError, '重叠'):
+            net.build_plan(self.gloves, self.network, 'eth0')
+        self.assertFalse(self.network.events)
+
     def test_ambiguous_interfaces_require_explicit_choice(self):
         self.network.owners.add(('eth10', '192.168.1.100'))
         with self.assertRaisesRegex(RuntimeError, '无法唯一定位'):
@@ -275,6 +323,13 @@ class DiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, '其他 SN'):
                 net.verify_gloves(self.manager, [glove()])
         device.hand_skeleton.assert_not_called()
+        self.manager.disconnect_all.assert_called()
+
+    def test_sdk_connect_failure_names_target_and_disconnects(self):
+        self.manager.connect.side_effect = RuntimeError('timeout')
+        with patch.dict(sys.modules, {'wuji_sdk': NS(ConnectOptions=lambda **kw: kw)}):
+            with self.assertRaisesRegex(RuntimeError, r'G1 \(192.168.1.100:50001\).*timeout'):
+                net.verify_gloves(self.manager, [glove()])
         self.manager.disconnect_all.assert_called()
 
     def test_arp_command_errors_are_not_free_addresses(self):

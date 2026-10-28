@@ -35,7 +35,7 @@ class Addition:
 @dataclass
 class Plan:
     additions: list[Addition]
-    interfaces: dict[str, str]  # glove SN -> interface proven by ARP
+    interfaces: dict[str, str]  # glove SN -> candidate interface; SDK verifies after apply
 
 
 def run(command, *, privileged=False, check=True):
@@ -144,10 +144,19 @@ def build_plan(gloves, network, interface=None, prefix=24):
             raise RuntimeError(f'手套 {glove.sn} 地址 {glove.host} 与本机地址冲突。')
         print(f'探测 {glove.sn} ({glove.host}) 的有线接口…', flush=True)
         matches = [name for name in candidates if network.occupied(name, glove.host)]
-        if len(matches) != 1:
+        if len(matches) == 1:
+            name = matches[0]
+        elif not matches and len(candidates) == 1:
+            # Some devices do not answer zero-source or cross-subnet ARP.
+            # A sole/explicit wired interface is a candidate, NOT proof of
+            # connectivity. Only retain new addresses after SDK validation.
+            name = candidates[0]
+            print(f'{glove.host} 未回复前置 ARP；试用唯一候选接口 {name}。'
+                  '应用后必须通过 SDK 身份与骨架验证才能确认网络就绪。', flush=True)
+        else:
             raise RuntimeError(f'{glove.host} 的 ARP 响应接口为 {matches}，无法唯一定位。'
-                               '检查接线；多接口时使用 --interface eth0 指定。')
-        name = matches[0]
+                               f'可用有线接口：{candidates}。'
+                               '请用 --interface 指定手套实际连接的接口（如 --interface eth0）。')
         plan.interfaces[glove.sn] = name
         # Device subnet masks are not exposed by discovery. Use explicit/default
         # prefix for new addresses, reuse an existing matching address if possible.
@@ -198,6 +207,7 @@ def verify_routes(gloves, plan, network):
         valid = any(n == name and str(a.ip) == source and glove.host in a.network for n, a in locals_)
         if route.get('dev') != name or route.get('gateway') or not valid:
             raise RuntimeError(f'{glove.host} 路由/源地址仍不正确：{route}')
+        print(f'路由确认：{glove.host} -> {name}，源地址 {source}', flush=True)
 
 
 def verify_gloves(manager, gloves):
@@ -206,7 +216,11 @@ def verify_gloves(manager, gloves):
                              auto_time_sync_interval_ms=None)
     try:
         for glove in gloves:
-            device = manager.connect(address=glove.address, device_name=f'network_{glove.sn}', options=options)
+            print(f'SDK 验证：{glove.sn} {glove.address}…', flush=True)
+            try:
+                device = manager.connect(address=glove.address, device_name=f'network_{glove.sn}', options=options)
+            except Exception as exc:
+                raise RuntimeError(f'{glove.sn} ({glove.address}) SDK 连接失败：{exc}') from exc
             if device.serial_number != glove.sn:
                 raise RuntimeError(f'{glove.address} 返回了其他 SN；检查重复 IP。')
             side = str(device.hand_side().get())
@@ -240,12 +254,14 @@ def apply_plan(gloves, plan, network, verify):
                 raise RuntimeError(f'{host} 已被占用，请重新运行以选择其他地址。')
             network.add(addition)
             added.append(addition)
+            print(f'已临时添加：{addition.interface} + {addition.cidr}；等待验证。', flush=True)
         verify_routes(gloves, plan, network)
         verify()
     except BaseException:
         for addition in reversed(added):
             try:
                 network.remove(addition)
+                print(f'验证未完成，已撤回本次地址：{addition.interface} {addition.cidr}', flush=True)
             except Exception as exc:
                 print(f'回滚失败：{exc}\n手动恢复：sudo ip address del {addition.cidr} dev {addition.interface}',
                       file=sys.stderr)
@@ -255,7 +271,7 @@ def apply_plan(gloves, plan, network, verify):
 def main(argv=None):
     parser = argparse.ArgumentParser(description='一/二代共用：发现手套并为机器人有线网卡补充同网段地址。')
     parser.add_argument('--apply', action='store_true', help='应用临时地址并验证 SDK 连接；默认只预览')
-    parser.add_argument('--interface', help='仅探测指定物理有线接口，如 eth0；仍检查 ARP')
+    parser.add_argument('--interface', help='指定手套连接的物理有线接口，如 eth0；无前置 ARP 回复时也可试配并用 SDK 验证')
     parser.add_argument('--sn', action='append', default=[], help='仅匹配指定手套 SN，可重复')
     parser.add_argument('--prefix-length', type=int, choices=range(16, 31), default=24,
                         metavar='16..30', help='新地址的前缀长度，默认 24；SDK 扫描不提供设备掩码')

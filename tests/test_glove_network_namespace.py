@@ -79,8 +79,35 @@ def main():
             raise AssertionError('Expected failure')
         assert network.route(gloves[0].host)['dev'] == 'wlan0', 'Rollback did not restore route'
         assert not any('192.168.1.201' == a.get('local') for r in network.addresses() for a in r['addr_info'])
+
+        # Model the observed silence by dropping zero-source and old-subnet
+        # requests at the virtual peer. Do not infer the glove's firmware cause.
+        peer_command(network.ip, 'address', 'del', '192.168.1.200/24', 'dev', 'gloves')
+        peer_command('tc', 'qdisc', 'add', 'dev', 'gloves', 'clsact')
+        for priority, source in [('1', '0.0.0.0/32'), ('2', '6.6.7.0/24')]:
+            peer_command('tc', 'filter', 'add', 'dev', 'gloves', 'ingress', 'protocol', 'arp',
+                         'pref', priority, 'flower', 'arp_sip', source, 'action', 'drop')
+        assert not network.occupied('eth0', gloves[0].host), 'Expected zero-source ARP to be ignored'
+        cross = subprocess.run([network.arping, '-I', 'eth0', '-s', '6.6.7.100',
+                                '-c', '1', '-w', '1', str(gloves[0].host)], capture_output=True, text=True)
+        assert cross.returncode == 1 and not cross.stderr.strip(), cross
+        fallback = build_plan(gloves, network)
+        assert fallback.additions[0].cidr == '192.168.1.200/24'
+        apply_plan(gloves, fallback, network, verify)
+        assert build_plan(gloves, network).additions == [], 'Fallback is not idempotent'
+        network.remove(fallback.additions[0])
+        try:
+            apply_plan(gloves, fallback, network, fail)
+        except RuntimeError as exc:
+            assert str(exc) == 'simulated SDK failure', exc
+        else:
+            raise AssertionError('Fallback skipped verification')
+        assert network.route(gloves[0].host)['dev'] == 'wlan0', 'Fallback rollback failed'
+        assert '6.6.7.100' in command(network.ip, '-4', 'address', 'show', 'dev', 'eth0')
         print('PASS: real link/address parsing and wired filtering, ARP interface detection, occupied .200 skipped, .201 address/route, ping both peers, '
-              'idempotency, original IP/default gateway preservation, failure rollback; isolated namespaces only')
+              'idempotency, original IP/default gateway preservation, failure rollback; '
+              'zero-source/cross-subnet ARP silence followed by successful same-subnet setup and fallback rollback; '
+              'isolated namespaces only')
     finally:
         peer.terminate()
         peer.wait(timeout=5)

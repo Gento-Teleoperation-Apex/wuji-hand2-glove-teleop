@@ -1,5 +1,12 @@
 # Application changelog
 
+## 2.3.0-test.4 — 2026-10-28 (prerelease; ARP bootstrap fallback)
+
+- When discovered gloves do not answer pre-address ARP, allow tentative host address setup on the sole physical wired candidate or an explicitly selected interface. Multiple unresolved candidates still fail; host-address collision and route checks remain.
+- Require SDK identity and skeleton verification after setup; roll back only newly added addresses on failure. Log the chosen route/source, target SN/IP and actual additions/rollback so discovery is not confused with connection success.
+- Add seven unit regressions and real namespace coverage dropping zero-source/old-subnet ARP, followed by same-subnet connectivity, idempotency and rollback. Document the existing manual-address + legacy teleop path.
+- Physical glove connectivity is not yet validated; the cause of the user's ARP silence remains unconfirmed. Motor/retarget parameters are unchanged.
+
 ## 2.3.0-test.3 — 2026-10-21 (prerelease; Ethernet detection fix)
 
 - Fix false "no connected physical Ethernet interface" after successful glove discovery: Ubuntu `ip -j -4 address show` omits `link_type`. Merge `ip -j link show` metadata with IPv4 addresses by interface index, including interfaces without IPv4 addresses.

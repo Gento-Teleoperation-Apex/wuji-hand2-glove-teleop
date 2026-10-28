@@ -1,6 +1,6 @@
-# Wuji Hand 一/二代手套遥操 · 2.3.0-test.3
+# Wuji Hand 一/二代手套遥操 · 2.3.0-test.4
 
-> **测试版，尚未进行实体手/手套验收。** 本次仅发布 `v2.3.0-test.3` 预发布版；待实体网络和两代遥操实测通过后再发布正式 `v2.3.0`。Debian 包版本使用 `2.3.0~test.3-1`，后续可正常升级到 `2.3.0-1`。
+> **测试版，尚未进行实体手/手套验收。** 本次仅发布 `v2.3.0-test.4` 预发布版；待实体网络和两代遥操实测通过后再发布正式 `v2.3.0`。Debian 包版本使用 `2.3.0~test.4-1`，后续可正常升级到 `2.3.0-1`。
 
 支持一代 USB 手、二代以太网手使用同一款 Wuji 手套。2.3.0 新增手套网络自动匹配：发现手套后，为机器人有线网卡补充同网段地址，解决“扫描到了手套，连接却误走 Wi-Fi 而超时”的问题。保留机器人原 IP，手套 IP 不变。二代另外提供优化遥操、ROS、示教、姿态切换和网页功能。目标环境为 Ubuntu 22.04 / Jetson AGX Orin 或 Linux x86_64。
 
@@ -8,15 +8,17 @@
 
 test.3 修复：旧 test.1/test.2 在部分 iproute2 环境下扫描到手套后仍报“没有已连接的物理有线接口”，原因是 IPv4 地址列表缺少 `link_type` 字段。现已分别读取网卡链路信息和 IPv4 地址后合并。遇到该报错请升级本测试包，不必修改手套 SN/IP；原有 SDK 环境可以继续使用。
 
+test.4 修复：手套已被扫描发现，但前置 ARP 无回复时，不再一律终止。若只有一个可用物理有线接口，或通过 `--interface eth0` 明确指定接口，允许临时补充网段，再核对路由和 SDK SN/骨架。最终验证失败会撤回本次新增地址；多个接口无法确定时仍需指定。此变更不代表已经确认现场固件的无 ARP 回复原因。
+
 ## 四步开始遥操（一代、二代共用）
 
 先接好电源、手和手套。一代手使用 USB；二代手通过以太网连接，手端网段需已可达。手套接机器人的有线接口或同一交换机。默认支持自动发现、每侧一只手和一只手套；只接单侧也可以。先退出 Studio 或其他控制进程。
 
-下载 [v2.3.0-test.3 测试安装包](https://github.com/Gento-Teleoperation-Apex/wuji-hand2-glove-teleop/releases/tag/v2.3.0-test.3)。Jetson 用 `arm64`，PC 通常用 `amd64`（`dpkg --print-architecture` 查看）。在安装包所在目录执行：
+下载 [v2.3.0-test.4 测试安装包](https://github.com/Gento-Teleoperation-Apex/wuji-hand2-glove-teleop/releases/tag/v2.3.0-test.4)。Jetson 用 `arm64`，PC 通常用 `amd64`（`dpkg --print-architecture` 查看）。在安装包所在目录执行：
 
 ```bash
 # 1. 安装应用（PC 将 arm64 换成 amd64）
-sudo apt install ./wuji-hand2-glove-teleop_2.3.0-test.3-1_arm64.deb
+sudo apt install ./wuji-hand2-glove-teleop_2.3.0-test.4-1_arm64.deb
 
 # 2. 安装 SDK 环境，需要联网；普通用户运行，不加 sudo
 wuji-setup-runtime
@@ -54,22 +56,33 @@ wuji-teleop --hand-model wujihand2 --side both # 必须双侧齐全
 `wuji-glove-network` 一、二代共用，**为机器人网卡添加地址，手套的 IP 不变**。它不会配置二代手本身的 IP，也不会启用机械手。
 
 - SDK 扫描手套的真实 SN 和 IPv4 地址，不依赖 README 中的示例地址。
-- 在已连接的独立物理有线接口上做 ARP 探测，定位手套所在接口；不会从当前默认路由猜测接口，也不会改 Wi-Fi、Docker、桥接或 VLAN。
-- 若该接口缺少手套网段，选择未被发现设备/本机使用且通过 ARP 冲突检测的主机地址。默认按 `/24` 补充，优先选择 `.200`，占用则尝试下一个。SDK 发现信息不含掩码，特殊掩码请显式传 `--prefix-length`。
+- 在已连接的独立物理有线接口上做 ARP 探测，优先按唯一回复选择接口。无回复时，若仅有一个候选接口（含用户显式指定），允许试配；多个候选且无法定位则停止并列出接口供用户选择。不会从默认路由猜测接口，也不会改 Wi-Fi、Docker、桥接或 VLAN。
+- 若该接口缺少手套网段，排除已发现设备和本机地址，再用 ARP 检测候选主机地址的在线占用。默认按 `/24` 补充，优先选择 `.200`，占用则尝试下一个。SDK 发现信息不含掩码，特殊掩码请显式传 `--prefix-length`。
 - 检查路由和源地址，再使用 SDK 直连每只手套，核对 SN 并接收有效 21 点骨架。不同手套同 IP、接口不唯一、其他网卡/路由网段重叠时停止并说明原因。
 - 只添加临时地址，保留原有地址、默认网关和网络管理器配置，不写手套固件、不重启设备。失败/中断会撤回本次添加的地址；已经存在的地址不删除。成功后打印撤销命令。重复运行会复用可用地址。
 
-例如机器人 `eth0=6.6.7.100/24`，手套为 `192.168.1.100` / `.101`，原路由误走 Wi-Fi：工具会确认手套在 `eth0`，为其补充例如 `192.168.1.200/24`，随后验证手套连接。`.200` 只是候选，不是写死的部署地址。ARP 无法发现离线设备的占用；生产网络应预留可用地址，避免其他主机之后使用同一地址。
+例如机器人 `eth0=6.6.7.100/24`，手套为 `192.168.1.100` / `.101`，原路由误走 Wi-Fi：通过 ARP 选择 `eth0` 或明确指定 `--interface eth0` 后，工具为其补充例如 `192.168.1.200/24`，随后验证手套连接。`.200` 只是候选，不是写死的部署地址。ARP 无法发现离线或不回应探测的设备占用；现场网络应预留可用地址，避免其他主机使用同一地址。没有前置 ARP 回复时，接口只是待验证候选，不能将“添加计划”或“已临时添加”当作连接成功。
 
 ```bash
 wuji-glove-network                         # 只预览；ARP 探测仍可能要求 sudo，不改地址
 wuji-glove-network --apply                 # 自动匹配 + 连接验证
-wuji-glove-network --apply --interface eth0 # 多有线接口时指定，仍需通过 ARP 验证
+wuji-glove-network --apply --interface eth0 # 指定实际接口；无前置 ARP 回复也会试配，再用 SDK 验证
 wuji-glove-network --apply --sn YOUR_GLOVE_SN # 只处理选定手套，可重复 --sn
 wuji-glove-network --help
 ```
 
-普通用户运行，工具仅对 `arping` 和 `ip address add/del` 调用 sudo，SDK 仍使用当前用户的数据。依赖 `iproute2`、`iputils-arping`、`sudo`，deb 自动安装。网络准备成功只证明手套连接和骨架可读，不代表手端连接/运动已验收。若 ARP 无响应、手套未被 SDK 发现或网络不属于直接连接的有线场景，工具会报错，需要先处理接线、供电或现场网络。
+普通用户运行，工具仅对 `arping` 和 `ip address add/del` 调用 sudo，SDK 仍使用当前用户的数据。依赖 `iproute2`、`iputils-arping`、`sudo`，deb 自动安装。网络准备成功只证明手套连接和骨架可读，不代表手端连接/运动已验收。若手套未被 SDK 发现、多个接口无法确定、网络存在冲突或补地址后 SDK 验证仍失败，工具会报错。SDK 错误会标明对应 SN/IP，撤回新增地址也会打印；请保留完整输出用于诊断。
+
+### 已安装旧版时，也可手动配网使用现有遥操
+
+如果不升级，且机器人 `eth0` 为 `6.6.7.100/24`、手套为 `192.168.1.100/.101`，确认 `192.168.1.200` 未被其他设备使用后：
+
+```bash
+sudo ip addr add 192.168.1.200/24 dev eth0
+wuji-hand2-check --kind gloves --side both
+```
+
+检查两只手套均 `ok: true` 且 `errors: []` 后，再执行 `wujihand2-teleop-real` 开始运动。此路径不需要运行自动配网命令；已配置好同网段地址也不必重复添加。补地址并不保证 SDK 一定能连上，仍以检查结果为准。手动添加的地址不会被工具自动回滚；撤销命令为 `sudo ip addr del 192.168.1.200/24 dev eth0`。
 
 ## 一代与二代的参数设置
 
@@ -108,10 +121,10 @@ wuji-teleop --hand-model wujihand2 --side right \
 
 ## 0. 安装与首次配置
 
-从本仓库 [Releases](https://github.com/Gento-Teleoperation-Apex/wuji-hand2-glove-teleop/releases) 下载 `wuji-hand2-glove-teleop_2.3.0-test.3-1_arm64.deb`（Jetson）。PC x86_64 使用 amd64 包。
+从本仓库 [Releases](https://github.com/Gento-Teleoperation-Apex/wuji-hand2-glove-teleop/releases) 下载 `wuji-hand2-glove-teleop_2.3.0-test.4-1_arm64.deb`（Jetson）。PC x86_64 使用 amd64 包。
 
 ```bash
-sudo apt install ./wuji-hand2-glove-teleop_2.3.0-test.3-1_arm64.deb
+sudo apt install ./wuji-hand2-glove-teleop_2.3.0-test.4-1_arm64.deb
 # 已有 ~/.venvs/wuji 且安装了相应 SDK，可跳过这一步
 wuji-setup-runtime
 ```
@@ -308,8 +321,8 @@ wuji-hand2-bag play ~/hand-bags/session01 --side both --rate 0.5
 ## 构建与测试
 
 ```bash
-./build_deb.sh 2.3.0~test.3 arm64
-./build_deb.sh 2.3.0~test.3 amd64
+./build_deb.sh 2.3.0~test.4 arm64
+./build_deb.sh 2.3.0~test.4 amd64
 bash tests/run_tests.sh
 ```
 
